@@ -597,25 +597,26 @@ io.on('connection', (socket) => {
     });
   }
 
-  // Kullanıcı listesi güncelleme isteği
-  socket.on('request-user-list', ({ roomId }) => {
-    console.log(`${socket.userData?.name || 'Bir kullanıcı'} kullanıcı listesi güncellemesi istedi (${roomId})`);
+  // Kullanıcı listesi isteğini işle
+  socket.on('request-user-list', (data) => {
+    const { roomId } = data;
+    const user = getUserBySocketId(socket.id);
+    
+    if (user) {
+      console.log(`${user.name} kullanıcısı ${roomId} odası için kullanıcı listesi istedi`);
+    }
     
     if (!roomId) {
-      console.error('request-user-list: roomId belirtilmemiş');
+      console.error('Kullanıcı listesi isteğinde roomId belirtilmemiş');
       return;
     }
     
-    // Odadaki güncel kullanıcı listesini al
-    const users = getUsers(roomId);
+    const users = getUsersInRoom(roomId);
+    console.log(`${roomId} odasındaki kullanıcı listesi gönderiliyor (${users.length} kullanıcı)`);
     
-    console.log(`Kullanıcı listesi istendi, gönderiliyor: ${users.length} kullanıcı`);
-    
-    // İsteyen kullanıcıya gönder
-    socket.emit('users-updated', users);
-    
-    // Diğer kullanıcılara da gönder
-    socket.to(roomId).emit('users-updated', users);
+    // İsteyen kullanıcıya ve odadaki diğer kullanıcılara gönder
+    socket.emit('users-updated', { users });
+    socket.to(roomId).emit('users-updated', { users });
   });
 
   // Yeniden bağlanma isteği - yeni
