@@ -330,126 +330,100 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Yeni kullanıcı durum güncelleme olayı
+  // Odaya katılma işlemi
+  socket.on('join-room', (userData) => {
+    try {
+      const { roomId, userId, userName, isHost } = userData;
+      console.log(`Kullanıcı odaya katılıyor: ${userName} (${userId}), Oda: ${roomId}`);
+      
+      // Oda varsa katıl
+      socket.join(roomId);
+      
+      // Kullanıcı bilgilerini sakla
+      socket.userData = {
+        id: userId,
+        name: userName || 'Misafir',
+        roomId,
+        isHost: !!isHost,
+        isMuted: false,
+        noiseSuppression: 'normal'
+      };
+      
+      // Kullanıcıları güncelle ve bildir
+      updateUsers(roomId);
+    } catch (error) {
+      console.error('Odaya katılma hatası:', error);
+      socket.emit('room-error', { message: 'Odaya katılırken bir hata oluştu' });
+    }
+  });
+
+  // Kullanıcı durumu güncelleme
   socket.on('user-status', (data) => {
-    console.log(`Kullanıcı durum güncellemesi: ${socket.userData?.name} (${socket.id})`, data);
-    
-    const { roomId, isMuted, noiseSuppression, connected, ...otherData } = data;
-    
-    // Kullanıcı verilerini güncelle
-    if (socket.userData) {
-      if (typeof isMuted !== 'undefined') socket.userData.isMuted = isMuted;
-      if (typeof noiseSuppression !== 'undefined') socket.userData.noiseSuppression = noiseSuppression;
-      if (typeof connected !== 'undefined') socket.userData.connected = connected;
+    try {
+      if (!socket.userData) return;
       
-      // Diğer tüm verileri güncelle
-      socket.userData = { ...socket.userData, ...otherData };
-    }
-    
-    // Odadaki kullanıcıları güncelle
-    if (roomId) {
-      const users = getUsers(roomId);
-      io.to(roomId).emit('users-updated', users);
-    }
-  });
-
-  // Ses durumu değişikliği
-  socket.on('voice-status-change', ({ roomId, isMuted }) => {
-    console.log(`Ses durumu değişti: ${socket.userData?.name} (${socket.id}), Durumu: ${isMuted ? 'Sessiz' : 'Aktif'}`);
-    
-    // Kullanıcı verileri içine ses durumunu kaydet
-    if (socket.userData) {
-      socket.userData.isMuted = isMuted;
-    }
-    
-    // Odadaki herkese bildir
-    io.to(roomId).emit('user-voice-status', {
-      userId: socket.id,
-      isMuted
-    });
-    
-    // Güncellenmiş kullanıcı listesini de gönder
-    const users = getUsers(roomId);
-    io.to(roomId).emit('user-joined', users);
-  });
-
-  // Gürültü engelleme seviyesi değişikliği
-  socket.on('noise-suppression-change', ({ roomId, level }) => {
-    console.log(`Gürültü engelleme seviyesi değişti: ${socket.userData?.name} (${socket.id}), Seviyesi: ${level}`);
-    
-    // Kullanıcı verileri içine gürültü engelleme seviyesini kaydet
-    if (socket.userData) {
-      socket.userData.noiseSuppression = level;
-    }
-    
-    // Sadece ilgili kullanıcıya onay gönder
-    socket.emit('noise-suppression-updated', {
-      level
-    });
-  });
-
-  // Kullanıcı odaya katıldığında
-  socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
-    console.log(`${userName} (${userId || socket.id}) ${roomId} odasına katıldı`);
-    
-    // Kullanıcı oturumunu yeniden bağlanma durumu için kontrol et
-    let isReconnect = false;
-    const previousRoom = Object.keys(socket.rooms).find(room => room !== socket.id);
-    
-    if (previousRoom) {
-      console.log(`${userName} önceki bir odadan tekrar bağlanıyor: ${previousRoom}`);
-      socket.leave(previousRoom);
-      isReconnect = true;
-    }
-    
-    // Odaya katıl
-    socket.join(roomId);
-    
-    // Kullanıcı bilgilerini sakla - ID'yi saklamayı unutma
-    socket.userData = { 
-      id: userId || socket.id, 
-      name: userName, 
-      room: roomId, 
-      isHost, 
-      isConnected: true,
-      isMuted: true, // Başlangıçta herkesin sesi kapalı
-      noiseSuppression: 'medium' // Varsayılan gürültü engelleme seviyesi
-    };
-    
-    // Odadaki tüm kullanıcıları güncelle
-    const users = getUsers(roomId);
-    console.log(`Odadaki kullanıcılar (${roomId}):`, users);
-    
-    // Herkese kullanıcı listesini gönder
-    io.to(roomId).emit('user-joined', users);
-    
-    // Özellikle yeni kullanıcıya bilgi ver
-    socket.emit('room-info', {
-      roomId,
-      users,
-      yourId: socket.id,
-      isReconnect
-    });
-
-    // Yeniden bağlanma durumunda ekstra işlemler yap
-    if (isReconnect) {
-      console.log(`${userName} yeniden bağlandı, mevcut ekran paylaşımlarını bildirme`);
+      // Kullanıcı bilgilerini güncelle
+      Object.assign(socket.userData, data);
       
-      // Bu odada ekran paylaşan kullanıcıları bul ve yeni kullanıcıya bildir
-      const sharingSockets = findScreenSharingSockets(roomId);
-      sharingSockets.forEach(sharingSocket => {
-        if (sharingSocket.id !== socket.id) {
-          console.log(`${sharingSocket.userData?.name} ekran paylaştığı bilgisi gönderiliyor`);
-          
-          // Yeni bağlanan kullanıcıya bildir
-          socket.emit('screen-share-started', {
-            userId: sharingSocket.id,
-            userName: sharingSocket.userData?.name
-          });
+      // Odadaki kullanıcıları bilgilendir
+      updateUsers(data.roomId);
+    } catch (error) {
+      console.error('Kullanıcı durumu güncelleme hatası:', error);
+    }
+  });
+
+  // Odadan ayrılma
+  socket.on('leave-room', ({ roomId }) => {
+    try {
+      console.log(`Kullanıcı odadan ayrılıyor: ${socket.userData?.name} (${socket.id}), Oda: ${roomId}`);
+      socket.leave(roomId);
+      
+      // Kullanıcı verilerini temizle
+      socket.userData = null;
+      
+      // Odadaki kullanıcıları bilgilendir
+      updateUsers(roomId);
+    } catch (error) {
+      console.error('Odadan ayrılma hatası:', error);
+    }
+  });
+
+  // Odadaki kullanıcı listesini güncelle
+  function updateUsers(roomId) {
+    try {
+      if (!roomId) return;
+      
+      const room = io.sockets.adapter.rooms.get(roomId);
+      if (!room) return;
+      
+      // Odadaki geçerli kullanıcıları al
+      const usersList = [];
+      room.forEach((socketId) => {
+        const userSocket = io.sockets.sockets.get(socketId);
+        if (userSocket && userSocket.userData) {
+          // Eksik verileri kontrol et - sadece geçerli kullanıcıları listeye ekle
+          if (userSocket.userData.id && userSocket.userData.name) {
+            usersList.push({
+              id: userSocket.userData.id,
+              name: userSocket.userData.name,
+              isHost: !!userSocket.userData.isHost,
+              isMuted: !!userSocket.userData.isMuted,
+              noiseSuppression: userSocket.userData.noiseSuppression || 'normal'
+            });
+          } else {
+            console.warn('Geçersiz kullanıcı verisi:', userSocket.userData);
+          }
         }
       });
+      
+      console.log(`Oda (${roomId}) kullanıcı listesi güncellendi: ${usersList.length} kullanıcı`);
+      
+      // Kullanıcı listesini odadaki herkese bildir
+      io.to(roomId).emit('users-updated', usersList);
+    } catch (error) {
+      console.error('Kullanıcı listesi güncelleme hatası:', error);
     }
-  });
+  }
 
   // Kullanıcı ekran paylaşmaya başladığında
   socket.on('screen-share-started', ({ roomId, userId, userName, hasAudio }) => {
