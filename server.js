@@ -35,6 +35,36 @@ app.get('/', (req, res) => {
   res.send('Socket.io sunucusu çalışıyor');
 });
 
+// Tanılama ve durum endpointi
+app.get('/status', (req, res) => {
+  const roomStats = [];
+  io.sockets.adapter.rooms.forEach((sockets, room) => {
+    // Soket ID'lerini istatistiklere dahil etme
+    if (!room.startsWith('/')) {
+      const users = getUsers(room);
+      roomStats.push({
+        roomId: room,
+        userCount: users.length,
+        users: users,
+        sharing: users.filter(u => u.isSharing).length > 0
+      });
+    }
+  });
+
+  res.json({
+    status: 'running',
+    connections: {
+      totalConnections: io.engine.clientsCount,
+      rooms: roomStats
+    },
+    serverInfo: {
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      nodeVersion: process.version
+    }
+  });
+});
+
 // WebRTC compatibility information route
 app.get('/webrtc-check', (req, res) => {
   res.json({
@@ -58,6 +88,35 @@ app.get('/webrtc-check', (req, res) => {
 // Socket.io bağlantı dinleyicisi
 io.on('connection', (socket) => {
   console.log('Bir kullanıcı bağlandı:', socket.id);
+
+  // Ekran bağlantısı tanılama
+  socket.on('rtc-diagnostic', ({ roomId, targetId }) => {
+    console.log(`Tanılama isteği alındı: ${socket.id} -> ${targetId}, Oda: ${roomId}`);
+    
+    try {
+      // Tanılama verilerini gönder
+      const diagnosticInfo = {
+        serverTime: Date.now(),
+        serverUptime: process.uptime(),
+        roomPresent: io.sockets.adapter.rooms.has(roomId),
+        targetPresent: io.sockets.sockets.has(targetId),
+        usersInRoom: getUsers(roomId)
+      };
+      
+      socket.emit('rtc-diagnostic-result', diagnosticInfo);
+      
+      // Hedef kullanıcı mevcutsa ona da bildirim gönder
+      if (targetId && io.sockets.sockets.has(targetId)) {
+        io.sockets.sockets.get(targetId).emit('rtc-connection-check', {
+          fromId: socket.id,
+          userName: socket.userData?.name || 'Bilinmeyen kullanıcı'
+        });
+      }
+    } catch (error) {
+      console.error('Tanılama hatası:', error);
+      socket.emit('rtc-diagnostic-error', { message: error.message });
+    }
+  });
 
   // Kullanıcı odaya katıldığında
   socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
@@ -123,10 +182,82 @@ io.on('connection', (socket) => {
       socket.userData.isSharing = true;
     }
     
+    // Kendisine doğrulama gönder
+    socket.emit('screen-share-confirmed', {
+      userId: userId || socket.id,
+      userName: socket.userData?.name || userName
+    });
+    
+    // Diğerlerine bildir
     socket.to(roomId).emit('screen-share-started', {
       userId: userId || socket.id,
       userName: socket.userData?.name || userName
     });
+    
+    // Odadaki tüm kullanıcıları güncelle ve herkese bildir
+    const users = getUsers(roomId);
+    io.to(roomId).emit('user-joined', users);
+    
+    // Tüm kullanıcılara yeni bağlantı kurmaları için bildirim
+    triggerReconnect(roomId, socket.id);
+  });
+
+  // Ekran paylaşımı için otomatik bağlantı yenileme
+  function triggerReconnect(roomId, sharingUserId) {
+    console.log(`Odadaki herkese bağlantı yenileme tetikleniyor (${roomId})`);
+    
+    // Odadaki tüm kullanıcıları bul
+    const users = getUsers(roomId);
+    
+    // Ekran paylaşan kullanıcı dışındaki herkese bildir
+    users.forEach(user => {
+      if (user.id !== sharingUserId) {
+        const targetSocket = io.sockets.sockets.get(user.id);
+        if (targetSocket && targetSocket.connected) {
+          console.log(`${user.name} kullanıcısına yeniden bağlanma sinyali gönderiliyor`);
+          targetSocket.emit('request-reconnect', {
+            shareUserId: sharingUserId,
+            roomId: roomId,
+            timestamp: Date.now()
+          });
+        }
+      }
+    });
+  }
+
+  // Yeniden bağlanma isteği - yeni
+  socket.on('request-peer-reconnect', ({ targetId, roomId }) => {
+    console.log(`Bağlantı yenileme isteği: ${socket.id} -> ${targetId}`);
+    
+    try {
+      const targetSocket = io.sockets.sockets.get(targetId);
+      if (targetSocket && targetSocket.connected) {
+        targetSocket.emit('peer-reconnect-signal', {
+          fromId: socket.id,
+          userName: socket.userData?.name || 'Bilinmeyen kullanıcı',
+          roomId: roomId,
+          timestamp: Date.now()
+        });
+        
+        socket.emit('reconnect-initiated', {
+          targetId: targetId,
+          success: true
+        });
+        
+        console.log(`Bağlantı yenileme talebi iletildi: ${socket.id} -> ${targetId}`);
+      } else {
+        socket.emit('reconnect-error', {
+          targetId: targetId,
+          message: 'Hedef kullanıcı bağlı değil'
+        });
+      }
+    } catch (error) {
+      console.error(`Bağlantı yenileme hatası: ${error.message}`);
+      socket.emit('reconnect-error', {
+        targetId: targetId,
+        message: error.message
+      });
+    }
   });
 
   // Kullanıcı ekran paylaşımını durdurduğunda
@@ -181,7 +312,14 @@ io.on('connection', (socket) => {
         signal,
         id: callerId,
         callerId: callerId, // Ek güvenlik için çift alan
-        senderName: senderName || socket.userData?.name || 'Bilinmeyen kullanıcı'
+        senderName: senderName || socket.userData?.name || 'Bilinmeyen kullanıcı',
+        timestamp: Date.now() // Zamansal kontrol için
+      });
+      
+      // Gönderim başarı onayı
+      socket.emit('signal-sent', {
+        targetId: userToSignal,
+        success: true
       });
       
       console.log(`Sinyal gönderildi: ${callerId} -> ${userToSignal}`);
@@ -192,6 +330,27 @@ io.on('connection', (socket) => {
         message: error.message
       });
     }
+  });
+
+  // Bağlantı yenileme talebi
+  socket.on('signal-reconnect-request', ({ targetId, roomId }) => {
+    console.log(`Bağlantı yenileme talebi: ${socket.id} -> ${targetId}`);
+    
+    // Hedef soket mevcut mu kontrol et 
+    const targetSocket = io.sockets.sockets.get(targetId);
+    if (!targetSocket) {
+      console.error(`Yeniden bağlanılacak soket bulunamadı: ${targetId}`);
+      return;
+    }
+    
+    // Kullanıcıya yeniden bağlanma sinyali gönder
+    targetSocket.emit('reconnect-signal', {
+      userId: socket.id,
+      userName: socket.userData?.name || 'Bilinmeyen kullanıcı',
+      roomId
+    });
+    
+    console.log(`Yeniden bağlanma talebi gönderildi: ${socket.id} -> ${targetId}`);
   });
 
   // WebRTC geri gelen sinyal - iyileştirildi
@@ -266,25 +425,50 @@ function findScreenSharingSockets(roomId) {
   return sharingSockets;
 }
 
-// Bir odadaki tüm kullanıcıları getir - iyileştirildi
+// Bir odadaki tüm kullanıcıları getir - güçlendirildi
 function getUsers(roomId) {
-  if (!io.sockets.adapter.rooms.has(roomId)) return [];
+  if (!roomId) {
+    console.error('getUsers: Oda kimliği belirtilmedi!');
+    return [];
+  }
   
-  const users = [];
-  io.sockets.adapter.rooms.get(roomId).forEach(socketId => {
-    const socket = io.sockets.sockets.get(socketId);
-    if (socket && socket.userData) {
-      users.push({
-        id: socketId,
-        name: socket.userData.name,
-        isHost: socket.userData.isHost || false,
-        isSharing: socket.userData.isSharing || false
-      });
-    }
-  });
+  if (!io.sockets.adapter.rooms.has(roomId)) {
+    console.log(`getUsers: ${roomId} odası mevcut değil`);
+    return [];
+  }
   
-  console.log(`Kullanıcı listesi hazırlandı (${roomId}):`, users);
-  return users;
+  try {
+    const users = [];
+    const socketIds = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
+    
+    socketIds.forEach(socketId => {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket && socket.userData) {
+        users.push({
+          id: socketId,
+          name: socket.userData.name || 'Adsız Kullanıcı',
+          isHost: socket.userData.isHost || false,
+          isSharing: socket.userData.isSharing || false,
+          connected: socket.connected
+        });
+      } else if (socket) {
+        // Soket var ama userData tanımlı değilse
+        users.push({
+          id: socketId,
+          name: 'Bilinmeyen Kullanıcı',
+          isHost: false,
+          isSharing: false,
+          connected: socket.connected
+        });
+      }
+    });
+    
+    console.log(`Kullanıcı listesi hazırlandı (${roomId}):`, users);
+    return users;
+  } catch (error) {
+    console.error(`getUsers hatası (${roomId}):`, error);
+    return [];
+  }
 }
 
 server.listen(PORT, () => {
