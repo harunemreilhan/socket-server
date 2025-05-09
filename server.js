@@ -1,7 +1,7 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import cors from 'cors';
 
 const app = express();
 
@@ -15,7 +15,7 @@ app.use(cors({
 // CORS Preflight isteklerine cevap ver
 app.options('*', cors());
 
-const server = http.createServer(app);
+const server = createServer(app);
 
 // Socket.io CORS ayarlarını güncelledik
 const io = new Server(server, {
@@ -61,26 +61,27 @@ io.on('connection', (socket) => {
 
   // Kullanıcı odaya katıldığında
   socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
-    console.log(`${userName} (${userId}) ${roomId} odasına katıldı`);
+    console.log(`${userName} (${userId || socket.id}) ${roomId} odasına katıldı`);
     
+    // Odaya katıl
     socket.join(roomId);
     
-    // Her odadaki kullanıcı listesini takip etmek için
-    const roomUsers = Array.from(io.sockets.adapter.rooms.get(roomId) || [])
-      .map(id => {
-        const userSocket = io.sockets.sockets.get(id);
-        return {
-          id,
-          name: userSocket?.userData?.name || "Anonim"
-        };
-      });
-      
-    // Kullanıcı bilgilerini sakla
-    socket.userData = { name: userName, room: roomId, isHost };
+    // Kullanıcı bilgilerini sakla - ID'yi saklamayı unutma
+    socket.userData = { id: userId || socket.id, name: userName, room: roomId, isHost };
     
     // Odadaki tüm kullanıcıları güncelle
     const users = getUsers(roomId);
+    console.log(`Odadaki kullanıcılar (${roomId}):`, users);
+    
+    // Herkese kullanıcı listesini gönder
     io.to(roomId).emit('user-joined', users);
+    
+    // Özellikle yeni kullanıcıya bilgi ver
+    socket.emit('room-info', {
+      roomId,
+      users,
+      yourId: socket.id
+    });
   });
 
   // Kullanıcı ekran paylaşmaya başladığında
@@ -100,19 +101,60 @@ io.on('connection', (socket) => {
     });
   });
 
-  // WebRTC sinyal gönderimi
-  socket.on('sending-signal', ({ userToSignal, callerId, signal }) => {
+  // WebRTC sinyal gönderimi - iyileştirildi
+  socket.on('sending-signal', ({ userToSignal, callerId, signal, senderName }) => {
+    console.log(`Sinyal gönderiliyor: ${callerId} -> ${userToSignal}`);
+    console.log(`Gönderenin adı: ${senderName || socket.userData?.name || 'Bilinmeyen kullanıcı'}`);
+    
+    // Signal nesnesinin içeriğini kontrol et
+    if (signal) {
+      console.log(`Sinyal tipi: ${signal.type || 'Bilinmiyor'}, SDPLength: ${signal.sdp ? signal.sdp.length : 0}`);
+    }
+    
+    // Hedef soket mevcut mu kontrol et
+    const targetSocket = io.sockets.sockets.get(userToSignal);
+    if (!targetSocket) {
+      console.error(`Hedef soket bulunamadı: ${userToSignal}`);
+      socket.emit('signal-error', {
+        error: 'Hedef kullanıcı bulunamadı',
+        targetId: userToSignal
+      });
+      return;
+    }
+    
+    // Ek bilgilerle beraber sinyali gönder
     io.to(userToSignal).emit('receiving-signal', {
       signal,
-      id: callerId
+      id: callerId,
+      callerId: callerId, // Ek güvenlik için çift alan
+      senderName: senderName || socket.userData?.name || 'Bilinmeyen kullanıcı'
     });
   });
 
-  // WebRTC geri gelen sinyal
+  // WebRTC geri gelen sinyal - iyileştirildi
   socket.on('returning-signal', ({ callerID, signal }) => {
+    console.log(`Yanıt sinyali gönderiliyor: ${socket.id} -> ${callerID}`);
+    
+    // Signal nesnesinin içeriğini kontrol et
+    if (signal) {
+      console.log(`Sinyal tipi: ${signal.type || 'Bilinmiyor'}, SDPLength: ${signal.sdp ? signal.sdp.length : 0}`);
+    }
+    
+    // Hedef soket mevcut mu kontrol et
+    const targetSocket = io.sockets.sockets.get(callerID);
+    if (!targetSocket) {
+      console.error(`Hedef soket bulunamadı: ${callerID}`);
+      socket.emit('signal-error', {
+        error: 'Hedef kullanıcı bulunamadı',
+        targetId: callerID
+      });
+      return;
+    }
+    
     io.to(callerID).emit('receiving-returned-signal', {
       signal,
-      id: socket.id
+      id: socket.id,
+      senderName: socket.userData?.name || 'Bilinmeyen kullanıcı'
     });
   });
 
@@ -135,7 +177,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Bir odadaki tüm kullanıcıları getir
+// Bir odadaki tüm kullanıcıları getir - iyileştirildi
 function getUsers(roomId) {
   if (!io.sockets.adapter.rooms.has(roomId)) return [];
   
@@ -145,11 +187,13 @@ function getUsers(roomId) {
     if (socket && socket.userData) {
       users.push({
         id: socketId,
-        name: socket.userData.name
+        name: socket.userData.name,
+        isHost: socket.userData.isHost || false
       });
     }
   });
   
+  console.log(`Kullanıcı listesi hazırlandı (${roomId}):`, users);
   return users;
 }
 
