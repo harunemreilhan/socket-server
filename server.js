@@ -330,6 +330,29 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Yeni kullanıcı durum güncelleme olayı
+  socket.on('user-status', (data) => {
+    console.log(`Kullanıcı durum güncellemesi: ${socket.userData?.name} (${socket.id})`, data);
+    
+    const { roomId, isMuted, noiseSuppression, connected, ...otherData } = data;
+    
+    // Kullanıcı verilerini güncelle
+    if (socket.userData) {
+      if (typeof isMuted !== 'undefined') socket.userData.isMuted = isMuted;
+      if (typeof noiseSuppression !== 'undefined') socket.userData.noiseSuppression = noiseSuppression;
+      if (typeof connected !== 'undefined') socket.userData.connected = connected;
+      
+      // Diğer tüm verileri güncelle
+      socket.userData = { ...socket.userData, ...otherData };
+    }
+    
+    // Odadaki kullanıcıları güncelle
+    if (roomId) {
+      const users = getUsers(roomId);
+      io.to(roomId).emit('users-updated', users);
+    }
+  });
+
   // Ses durumu değişikliği
   socket.on('voice-status-change', ({ roomId, isMuted }) => {
     console.log(`Ses durumu değişti: ${socket.userData?.name} (${socket.id}), Durumu: ${isMuted ? 'Sessiz' : 'Aktif'}`);
@@ -777,56 +800,30 @@ function findScreenSharingSockets(roomId) {
   return sharingSockets;
 }
 
-// Bir odadaki tüm kullanıcıları getir - güçlendirildi
+// Belirtilen odadaki tüm kullanıcıları getir
 function getUsers(roomId) {
-  if (!roomId) {
-    console.error('getUsers: Oda kimliği belirtilmedi!');
-    return [];
-  }
+  const users = [];
+  const room = io.sockets.adapter.rooms.get(roomId);
   
-  if (!io.sockets.adapter.rooms.has(roomId)) {
-    console.log(`getUsers: ${roomId} odası mevcut değil`);
-    return [];
-  }
-  
-  try {
-    const users = [];
-    const socketIds = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
-    
-    socketIds.forEach(socketId => {
+  if (room) {
+    room.forEach(socketId => {
       const socket = io.sockets.sockets.get(socketId);
       if (socket && socket.userData) {
         users.push({
-          id: socketId,
-          name: socket.userData.name || 'Adsız Kullanıcı',
+          id: socket.userData.id || socket.id,
+          name: socket.userData.name,
           isHost: socket.userData.isHost || false,
           isSharing: socket.userData.isSharing || false,
-          hasAudio: socket.userData.hasAudio || false,
           isMuted: socket.userData.isMuted !== undefined ? socket.userData.isMuted : true,
+          hasAudio: socket.userData.hasAudio !== undefined ? socket.userData.hasAudio : true,
           noiseSuppression: socket.userData.noiseSuppression || 'medium',
-          connected: socket.connected
-        });
-      } else if (socket) {
-        // Soket var ama userData tanımlı değilse
-        users.push({
-          id: socketId,
-          name: 'Bilinmeyen Kullanıcı',
-          isHost: false,
-          isSharing: false,
-          hasAudio: false,
-          isMuted: true,
-          noiseSuppression: 'medium',
-          connected: socket.connected
+          connected: socket.userData.connected !== undefined ? socket.userData.connected : true
         });
       }
     });
-    
-    console.log(`Kullanıcı listesi hazırlandı (${roomId}):`, users);
-    return users;
-  } catch (error) {
-    console.error(`getUsers hatası (${roomId}):`, error);
-    return [];
   }
+  
+  return users;
 }
 
 server.listen(PORT, () => {
