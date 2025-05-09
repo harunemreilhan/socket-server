@@ -707,37 +707,6 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('user-left', users);
     }
   });
-
-  // Ekran paylaşımı isteği - sonradan katılanlar için
-  socket.on('request-screen-share', ({ roomId, requesterId, requesterName, targetId }) => {
-    console.log(`${requesterName} kullanıcısı ekran paylaşımı talep ediyor. Hedef: ${targetId}`);
-    
-    try {
-      // Hedef soket mevcut mu kontrol et
-      const targetSocket = io.sockets.sockets.get(targetId);
-      if (!targetSocket) {
-        console.error(`Hedef ekran paylaşım kullanıcısı bulunamadı: ${targetId}`);
-        return;
-      }
-      
-      // Hedef kullanıcı bağlı mı kontrol et
-      if (!targetSocket.connected) {
-        console.error(`Hedef ekran paylaşım kullanıcısı bağlı değil: ${targetId}`);
-        return;
-      }
-      
-      // İsteği ilet
-      targetSocket.emit('request-screen-share', {
-        roomId,
-        requesterId,
-        requesterName
-      });
-      
-      console.log(`Ekran paylaşım isteği iletildi: ${requesterName} -> ${targetSocket.userData?.name}`);
-    } catch (error) {
-      console.error(`Ekran paylaşımı isteği iletilirken hata: ${error.message}`);
-    }
-  });
 });
 
 // Ekran paylaşan kullanıcıları bul
