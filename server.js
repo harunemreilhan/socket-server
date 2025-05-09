@@ -4,14 +4,28 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// CORS ayarları genişletildi
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// CORS Preflight isteklerine cevap ver
+app.options('*', cors());
 
 const server = http.createServer(app);
+
+// Socket.io CORS ayarlarını güncelledik
 const io = new Server(server, {
   cors: {
     origin: "*", // Tüm kaynaklardan bağlantılara izin ver
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  },
+  transports: ['websocket', 'polling'] // WebSocket ve polling destekle
 });
 
 const PORT = process.env.PORT || 3001;
