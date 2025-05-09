@@ -220,7 +220,59 @@ app.get('/screen-sharing-debug', (req, res) => {
 
 // Socket.io bağlantı dinleyicisi
 io.on('connection', (socket) => {
-  console.log('Bir kullanıcı bağlandı:', socket.id);
+  console.log('Yeni bir kullanıcı bağlandı:', socket.id);
+
+  // Kullanıcı bilgilerini saklamak için
+  const users = new Map();
+  const rooms = new Map();
+
+  // WebRTC ICE adayı iletme
+  socket.on('relay-ice', (data) => {
+    const { roomId, peerId, iceCandidate, from } = data;
+    
+    if (roomId && peerId) {
+      console.log(`ICE adayı iletiyor: ${from} -> ${peerId}`);
+      
+      // ICE adayını hedef kullanıcıya ilet
+      const room = io.sockets.adapter.rooms.get(roomId);
+      
+      if (room) {
+        room.forEach((socketId) => {
+          const targetSocket = io.sockets.sockets.get(socketId);
+          if (targetSocket && targetSocket.userData && targetSocket.userData.id === peerId) {
+            targetSocket.emit('relay-ice', {
+              iceCandidate,
+              from
+            });
+          }
+        });
+      }
+    }
+  });
+
+  // WebRTC SDP teklif/yanıt iletme
+  socket.on('relay-sdp', (data) => {
+    const { roomId, peerId, sessionDescription, from } = data;
+    
+    if (roomId && peerId) {
+      console.log(`SDP iletiyor: ${from} -> ${peerId}, Tip: ${sessionDescription.type}`);
+      
+      // SDP'yi hedef kullanıcıya ilet
+      const room = io.sockets.adapter.rooms.get(roomId);
+      
+      if (room) {
+        room.forEach((socketId) => {
+          const targetSocket = io.sockets.sockets.get(socketId);
+          if (targetSocket && targetSocket.userData && targetSocket.userData.id === peerId) {
+            targetSocket.emit('relay-sdp', {
+              sessionDescription,
+              from
+            });
+          }
+        });
+      }
+    }
+  });
 
   // Ekran bağlantısı tanılama
   socket.on('rtc-diagnostic', ({ roomId, targetId }) => {
