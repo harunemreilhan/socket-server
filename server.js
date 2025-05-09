@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -20,6 +19,26 @@ const PORT = process.env.PORT || 3001;
 // Route for checking if the server is running
 app.get('/', (req, res) => {
   res.send('Socket.io sunucusu çalışıyor');
+});
+
+// WebRTC compatibility information route
+app.get('/webrtc-check', (req, res) => {
+  res.json({
+    server: {
+      status: 'running',
+      node_version: process.version,
+      timestamp: new Date().toISOString()
+    },
+    info: 'Bu endpoint, istemcilere sunucunun çalışır durumda olduğunu ve WebRTC bağlantılarının kurulabileceğini doğrulamak için kullanılır.',
+    client_troubleshooting: {
+      webrtc_test: 'https://test.webrtc.org/',
+      turn_servers: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302'
+      ],
+      note: 'Ekran paylaşımı sorunları yaşıyorsanız, tarayıcınızın WebRTC desteğini ve ağ ayarlarınızı kontrol edin.'
+    }
+  });
 });
 
 // Socket.io bağlantı dinleyicisi
@@ -51,17 +70,20 @@ io.on('connection', (socket) => {
   });
 
   // Kullanıcı ekran paylaşmaya başladığında
-  socket.on('screen-share-started', ({ roomId }) => {
+  socket.on('screen-share-started', ({ roomId, userId, userName }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} ekran paylaşımı başlattı`);
     socket.to(roomId).emit('screen-share-started', {
-      userId: socket.id,
-      userName: socket.userData?.name
+      userId: userId || socket.id,
+      userName: socket.userData?.name || userName
     });
   });
 
   // Kullanıcı ekran paylaşımını durdurduğunda
-  socket.on('screen-share-stopped', ({ roomId }) => {
-    socket.to(roomId).emit('screen-share-stopped');
+  socket.on('screen-share-stopped', ({ roomId, userId, userName }) => {
+    socket.to(roomId).emit('screen-share-stopped', {
+      userId: userId || socket.id,
+      userName: socket.userData?.name || userName
+    });
   });
 
   // WebRTC sinyal gönderimi
