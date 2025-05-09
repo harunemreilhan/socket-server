@@ -81,8 +81,141 @@ app.get('/webrtc-check', (req, res) => {
         'stun:stun1.l.google.com:19302'
       ],
       note: 'Ekran paylaşımı sorunları yaşıyorsanız, tarayıcınızın WebRTC desteğini ve ağ ayarlarınızı kontrol edin.'
-    }
+    },
+    screen_sharing_tips: {
+      browser_settings: 'Chrome ve Firefox ekran paylaşımı için tercih edilir. Safari ve Edge bazı kısıtlamalar içerebilir.',
+      permissions: 'Ekran paylaşımı için tarayıcı izinlerinin verildiğinden emin olun.',
+      connection_steps: [
+        '1. Ekran paylaşım isteği açılır penceresinde mutlaka bir kaynak seçilmelidir (Ekran, Pencere veya Sekme)',
+        '2. İzin verildikten sonra birkaç saniye beklenmesi gerekebilir',
+        '3. Tarayıcı konsolunda (F12) hata olup olmadığını kontrol edin'
+      ],
+      known_issues: 'Bazı tarayıcılarda (özellikle iOS Safari) ekran paylaşımı desteği sınırlı olabilir.'
+    },
+    mediastream_check: 'navigator.mediaDevices.getDisplayMedia() browser konsolunda test edilebilir'
   });
+});
+
+// Ekran paylaşım kontrol ve tanılama endpoint
+app.get('/screen-sharing-debug', (req, res) => {
+  res.send(`
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>Ekran Paylaşımı Tanılama</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+      button { padding: 10px; margin: 10px 0; }
+      #log { background: #f4f4f4; padding: 10px; border-radius: 5px; max-height: 300px; overflow-y: auto; }
+      .success { color: green; }
+      .error { color: red; }
+    </style>
+  </head>
+  <body>
+    <h1>Ekran Paylaşımı Tanılama Aracı</h1>
+    <p>Bu sayfa, tarayıcınızın ekran paylaşımı yeteneklerini test etmek için kullanılabilir.</p>
+    
+    <button id="checkSupport">WebRTC Desteğini Kontrol Et</button>
+    <button id="testScreenShare">Ekran Paylaşımını Test Et</button>
+    <button id="stopScreenShare" disabled>Ekran Paylaşımını Durdur</button>
+    
+    <h3>Test Sonuçları:</h3>
+    <div id="log"></div>
+    
+    <video id="preview" autoplay muted style="max-width: 100%; margin-top: 20px; display: none;"></video>
+    
+    <script>
+      const log = document.getElementById('log');
+      const preview = document.getElementById('preview');
+      const stopBtn = document.getElementById('stopScreenShare');
+      let stream = null;
+      
+      function addLog(message, type = 'info') {
+        const entry = document.createElement('div');
+        entry.className = type;
+        entry.textContent = message;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+      }
+      
+      document.getElementById('checkSupport').addEventListener('click', () => {
+        addLog('WebRTC destek kontrolü başlatılıyor...', 'info');
+        
+        // Navigator kontrolü
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          addLog('HATA: Bu tarayıcı ekran paylaşımını desteklemiyor (navigator.mediaDevices.getDisplayMedia mevcut değil)', 'error');
+        } else {
+          addLog('BAŞARILI: Bu tarayıcı ekran paylaşımını destekliyor', 'success');
+        }
+        
+        // RTCPeerConnection kontrolü
+        if (window.RTCPeerConnection) {
+          addLog('BAŞARILI: RTCPeerConnection destekleniyor', 'success');
+        } else {
+          addLog('HATA: RTCPeerConnection desteklenmiyor', 'error');
+        }
+        
+        // Tarayıcı bilgileri
+        addLog(\`Tarayıcı: \${navigator.userAgent}\`, 'info');
+      });
+      
+      document.getElementById('testScreenShare').addEventListener('click', async () => {
+        addLog('Ekran paylaşımı testi başlatılıyor...', 'info');
+        
+        try {
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+          }
+          
+          const constraints = {
+            video: {
+              cursor: "always"
+            },
+            audio: false
+          };
+          
+          stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+          
+          addLog(\`BAŞARILI: Ekran paylaşımı başlatıldı (\${stream.getVideoTracks().length} video track)\`, 'success');
+          addLog(\`Video özellikleri: \${JSON.stringify(stream.getVideoTracks()[0].getSettings())}\`, 'info');
+          
+          preview.style.display = 'block';
+          preview.srcObject = stream;
+          stopBtn.disabled = false;
+          
+          // Takip paylaşımı durduğunda event
+          stream.getVideoTracks()[0].onended = () => {
+            addLog('Kullanıcı ekran paylaşımını durdurdu', 'info');
+            preview.style.display = 'none';
+            stopBtn.disabled = true;
+            stream = null;
+          };
+          
+        } catch (err) {
+          addLog(\`HATA: \${err.name}: \${err.message}\`, 'error');
+        }
+      });
+      
+      document.getElementById('stopScreenShare').addEventListener('click', () => {
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          addLog('Ekran paylaşımı durduruldu', 'info');
+          preview.style.display = 'none';
+          stopBtn.disabled = true;
+          stream = null;
+        }
+      });
+      
+      // Sayfa yüklendiğinde tarayıcı uyumluluk kontrolü yap
+      document.addEventListener('DOMContentLoaded', () => {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          addLog('UYARI: Bu tarayıcı ekran paylaşımını desteklemiyor veya HTTPS kullanmıyorsunuz', 'error');
+        }
+      });
+    </script>
+  </body>
+  </html>
+  `);
 });
 
 // Socket.io bağlantı dinleyicisi
@@ -185,13 +318,17 @@ io.on('connection', (socket) => {
     // Kendisine doğrulama gönder
     socket.emit('screen-share-confirmed', {
       userId: userId || socket.id,
-      userName: socket.userData?.name || userName
+      userName: socket.userData?.name || userName,
+      startTime: Date.now(),
+      streamId: `stream_${socket.id}_${Date.now()}`
     });
     
     // Diğerlerine bildir
     socket.to(roomId).emit('screen-share-started', {
       userId: userId || socket.id,
-      userName: socket.userData?.name || userName
+      userName: socket.userData?.name || userName,
+      startTime: Date.now(),
+      streamId: `stream_${socket.id}_${Date.now()}`
     });
     
     // Odadaki tüm kullanıcıları güncelle ve herkese bildir
@@ -200,6 +337,80 @@ io.on('connection', (socket) => {
     
     // Tüm kullanıcılara yeni bağlantı kurmaları için bildirim
     triggerReconnect(roomId, socket.id);
+  });
+
+  // Doğrudan medya bilgilerinin paylaşılması için yeni endpoint
+  socket.on('media-stream-info', ({ roomId, constraints, streamId }) => {
+    console.log(`Medya akışı bilgisi paylaşılıyor (${roomId}), stream: ${streamId}`);
+    
+    try {
+      // Kullanıcının paylaşım yapacağı bilgisini sakla
+      if (socket.userData) {
+        socket.userData.mediaStreamInfo = {
+          streamId: streamId,
+          constraints: constraints,
+          timestamp: Date.now()
+        };
+      }
+      
+      // Odadaki diğer kullanıcılara bildir
+      socket.to(roomId).emit('new-media-stream-available', {
+        userId: socket.id,
+        userName: socket.userData?.name || 'Bilinmeyen Kullanıcı',
+        streamId: streamId,
+        constraints: constraints
+      });
+      
+    } catch (error) {
+      console.error('Medya akışı bilgisi paylaşımı hatası:', error);
+      socket.emit('media-stream-error', {
+        error: error.message
+      });
+    }
+  });
+
+  // Ekran paylaşım hazır bildirimi - yeni
+  socket.on('screen-share-ready', ({ roomId, offerOptions }) => {
+    console.log(`${socket.userData?.name || 'Bir kullanıcı'} ekran paylaşım sinyalini hazır bildirdi`);
+    
+    // Odadaki diğer kullanıcılara bildir
+    socket.to(roomId).emit('prepare-for-screen-share', {
+      fromId: socket.id,
+      userName: socket.userData?.name || 'Bilinmeyen Kullanıcı',
+      offerOptions: offerOptions || {
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: false
+      }
+    });
+  });
+
+  // Yeni direkt bağlantı mekanizması
+  socket.on('direct-signal', ({ targetId, signalData, type }) => {
+    console.log(`Doğrudan sinyal gönderiliyor: ${socket.id} -> ${targetId}, tip: ${type}`);
+    
+    try {
+      const targetSocket = io.sockets.sockets.get(targetId);
+      if (targetSocket && targetSocket.connected) {
+        targetSocket.emit('direct-signal', {
+          fromId: socket.id,
+          signalData: signalData,
+          type: type,
+          userName: socket.userData?.name || 'Bilinmeyen Kullanıcı',
+          timestamp: Date.now()
+        });
+      } else {
+        socket.emit('direct-signal-error', {
+          targetId: targetId,
+          error: 'Hedef kullanıcı bağlı değil'
+        });
+      }
+    } catch (error) {
+      console.error('Doğrudan sinyal gönderimi hatası:', error);
+      socket.emit('direct-signal-error', {
+        targetId: targetId,
+        error: error.message
+      });
+    }
   });
 
   // Ekran paylaşımı için otomatik bağlantı yenileme
@@ -224,6 +435,22 @@ io.on('connection', (socket) => {
       }
     });
   }
+
+  // Kullanıcı listesi güncelleme isteği
+  socket.on('request-user-list', ({ roomId }) => {
+    console.log(`${socket.userData?.name || 'Bir kullanıcı'} kullanıcı listesi güncellemesi istedi (${roomId})`);
+    
+    // Odadaki güncel kullanıcı listesini al
+    const users = getUsers(roomId);
+    
+    // İsteyen kullanıcıya gönder
+    socket.emit('user-joined', users);
+    
+    // Diğer kullanıcılara da gönder (isteğe bağlı)
+    socket.to(roomId).emit('user-joined', users);
+    
+    console.log(`Kullanıcı listesi güncellendi ve gönderildi (${roomId}):`, users);
+  });
 
   // Yeniden bağlanma isteği - yeni
   socket.on('request-peer-reconnect', ({ targetId, roomId }) => {
