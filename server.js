@@ -334,20 +334,34 @@ io.on('connection', (socket) => {
   socket.on('join-room', (userData) => {
     try {
       const { roomId, userId, userName, isHost } = userData;
-      console.log(`Kullanıcı odaya katılıyor: ${userName} (${userId}), Oda: ${roomId}`);
+      console.log(`Kullanıcı odaya katılıyor - Gelen veri:`, userData);
+      
+      if (!roomId) {
+        console.error('Oda ID belirtilmemiş');
+        socket.emit('room-error', { message: 'Oda ID belirtilmemiş' });
+        return;
+      }
+      
+      if (!userName) {
+        console.error('Kullanıcı adı belirtilmemiş:', userData);
+        socket.emit('room-error', { message: 'Kullanıcı adı belirtilmemiş' });
+        return;
+      }
       
       // Oda varsa katıl
       socket.join(roomId);
       
       // Kullanıcı bilgilerini sakla
       socket.userData = {
-        id: userId,
+        id: userId || socket.id,
         name: userName || 'Misafir',
         roomId,
         isHost: !!isHost,
         isMuted: false,
         noiseSuppression: 'normal'
       };
+      
+      console.log(`Kullanıcı odaya başarıyla katıldı: ${socket.userData.name} (${socket.userData.id}), Oda: ${roomId}`);
       
       // Kullanıcıları güncelle ve bildir
       updateUsers(roomId);
@@ -391,16 +405,32 @@ io.on('connection', (socket) => {
   // Odadaki kullanıcı listesini güncelle
   function updateUsers(roomId) {
     try {
-      if (!roomId) return;
+      if (!roomId) {
+        console.error('updateUsers: roomId belirtilmemiş');
+        return;
+      }
       
       const room = io.sockets.adapter.rooms.get(roomId);
-      if (!room) return;
+      if (!room) {
+        console.error(`updateUsers: ${roomId} odası bulunamadı`);
+        return;
+      }
+      
+      console.log(`${roomId} odasındaki soket sayısı: ${room.size}`);
       
       // Odadaki geçerli kullanıcıları al
       const usersList = [];
+      let invalidUsers = 0;
+      
       room.forEach((socketId) => {
         const userSocket = io.sockets.sockets.get(socketId);
-        if (userSocket && userSocket.userData) {
+        if (userSocket) {
+          if (!userSocket.userData) {
+            console.warn(`Soket (${socketId}) var ama userData yok:`, userSocket.id);
+            invalidUsers++;
+            return;
+          }
+          
           // Eksik verileri kontrol et - sadece geçerli kullanıcıları listeye ekle
           if (userSocket.userData.id && userSocket.userData.name) {
             usersList.push({
@@ -412,11 +442,20 @@ io.on('connection', (socket) => {
             });
           } else {
             console.warn('Geçersiz kullanıcı verisi:', userSocket.userData);
+            invalidUsers++;
           }
+        } else {
+          console.warn(`${socketId} soketine ait kullanıcı bulunamadı`);
+          invalidUsers++;
         }
       });
       
-      console.log(`Oda (${roomId}) kullanıcı listesi güncellendi: ${usersList.length} kullanıcı`);
+      console.log(`Oda (${roomId}) kullanıcı listesi güncellendi: ${usersList.length} kullanıcı, ${invalidUsers} geçersiz kullanıcı`);
+      
+      // Boş liste kontrolü
+      if (usersList.length === 0) {
+        console.warn(`${roomId} odasında geçerli kullanıcı bulunamadı!`);
+      }
       
       // Kullanıcı listesini odadaki herkese bildir
       io.to(roomId).emit('users-updated', usersList);
@@ -749,11 +788,28 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Kullanıcı ayrıldı:', socket.id);
     
-    // Kullanıcının odasını bul ve diğerlerine haber ver
-    const roomId = socket.userData?.room;
-    if (roomId) {
-      const users = getUsers(roomId);
-      io.to(roomId).emit('user-left', users);
+    // Kullanıcının odasını bul
+    const userData = socket.userData;
+    if (userData && userData.roomId) {
+      const roomId = userData.roomId;
+      console.log(`${socket.id} (${userData.name}) kullanıcısı ${roomId} odasından ayrıldı`);
+      
+      // Odadan ayrıl
+      socket.leave(roomId);
+      
+      // Socket'in user data'sını temizle
+      socket.userData = null;
+      
+      // Odayı güncelle ve diğerlerine bildir
+      updateUsers(roomId);
+      
+      // user-left olayını da gönder
+      io.to(roomId).emit('user-left', { 
+        userId: userData.id, 
+        userName: userData.name 
+      });
+    } else {
+      console.warn('Ayrılan kullanıcının oda bilgisi bulunamadı:', socket.id);
     }
   });
 });
