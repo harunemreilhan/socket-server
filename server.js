@@ -601,16 +601,21 @@ io.on('connection', (socket) => {
   socket.on('request-user-list', ({ roomId }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} kullanıcı listesi güncellemesi istedi (${roomId})`);
     
+    if (!roomId) {
+      console.error('request-user-list: roomId belirtilmemiş');
+      return;
+    }
+    
     // Odadaki güncel kullanıcı listesini al
     const users = getUsers(roomId);
     
+    console.log(`Kullanıcı listesi istendi, gönderiliyor: ${users.length} kullanıcı`);
+    
     // İsteyen kullanıcıya gönder
-    socket.emit('user-joined', users);
+    socket.emit('users-updated', users);
     
-    // Diğer kullanıcılara da gönder (isteğe bağlı)
-    socket.to(roomId).emit('user-joined', users);
-    
-    console.log(`Kullanıcı listesi güncellendi ve gönderildi (${roomId}):`, users);
+    // Diğer kullanıcılara da gönder
+    socket.to(roomId).emit('users-updated', users);
   });
 
   // Yeniden bağlanma isteği - yeni
