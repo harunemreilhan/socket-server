@@ -5,11 +5,11 @@ import cors from 'cors';
 
 const app = express();
 
-// CORS ayarları genişletildi
+// CORS ayarları genişletildi ve daha esnek hale getirildi
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 // CORS Preflight isteklerine cevap ver
@@ -17,22 +17,38 @@ app.options('*', cors());
 
 const server = createServer(app);
 
-// Socket.io CORS ayarlarını güncelledik
+// Socket.io CORS ayarlarını daha geniş kapsamlı hale getirdik
 const io = new Server(server, {
   cors: {
     origin: "*", // Tüm kaynaklardan bağlantılara izin ver
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   },
-  transports: ['websocket', 'polling'] // WebSocket ve polling destekle
+  transports: ['websocket', 'polling'], // WebSocket ve polling destekle
+  // Bağlantı sorunları için timeout değerlerini artıralım
+  connectTimeout: 45000, // 45 saniye
+  pingTimeout: 60000,  // 60 saniye
+  pingInterval: 25000, // 25 saniye
 });
 
 const PORT = process.env.PORT || 3001;
 
-// Route for checking if the server is running
+// Ana route için basit yanıt
 app.get('/', (req, res) => {
   res.send('Socket.io sunucusu çalışıyor');
+});
+
+// Socket.io bağlantı ayarlarını dönen endpoint
+app.get('/socket-config', (req, res) => {
+  res.json({
+    success: true,
+    config: {
+      url: `http://localhost:${PORT}`,
+      transports: ['websocket', 'polling'],
+      timeout: 20000
+    }
+  });
 });
 
 // Tanılama ve durum endpointi
@@ -220,57 +236,25 @@ app.get('/screen-sharing-debug', (req, res) => {
 
 // Socket.io bağlantı dinleyicisi
 io.on('connection', (socket) => {
-  console.log('Yeni bir kullanıcı bağlandı:', socket.id);
+  console.log('Bir kullanıcı bağlandı:', socket.id);
 
-  // Kullanıcı bilgilerini saklamak için
-  const users = new Map();
-  const rooms = new Map();
-
-  // WebRTC ICE adayı iletme
-  socket.on('relay-ice', (data) => {
-    const { roomId, peerId, iceCandidate, from } = data;
-    
-    if (roomId && peerId) {
-      console.log(`ICE adayı iletiyor: ${from} -> ${peerId}`);
-      
-      // ICE adayını hedef kullanıcıya ilet
-      const room = io.sockets.adapter.rooms.get(roomId);
-      
-      if (room) {
-        room.forEach((socketId) => {
-          const targetSocket = io.sockets.sockets.get(socketId);
-          if (targetSocket && targetSocket.userData && targetSocket.userData.id === peerId) {
-            targetSocket.emit('relay-ice', {
-              iceCandidate,
-              from
-            });
-          }
-        });
-      }
+  // Yeni ping-pong mekanizması ekleyelim
+  const pingInterval = setInterval(() => {
+    if (socket.connected) {
+      socket.emit('server-ping', { timestamp: Date.now() });
+    } else {
+      clearInterval(pingInterval);
     }
-  });
+  }, 30000); // 30 saniyede bir ping gönder
 
-  // WebRTC SDP teklif/yanıt iletme
-  socket.on('relay-sdp', (data) => {
-    const { roomId, peerId, sessionDescription, from } = data;
-    
-    if (roomId && peerId) {
-      console.log(`SDP iletiyor: ${from} -> ${peerId}, Tip: ${sessionDescription.type}`);
-      
-      // SDP'yi hedef kullanıcıya ilet
-      const room = io.sockets.adapter.rooms.get(roomId);
-      
-      if (room) {
-        room.forEach((socketId) => {
-          const targetSocket = io.sockets.sockets.get(socketId);
-          if (targetSocket && targetSocket.userData && targetSocket.userData.id === peerId) {
-            targetSocket.emit('relay-sdp', {
-              sessionDescription,
-              from
-            });
-          }
-        });
-      }
+  // Bağlantı bilgilerini gönder
+  socket.emit('connection-info', {
+    socketId: socket.id,
+    connectionTime: new Date().toISOString(),
+    serverInfo: {
+      nodeVersion: process.version,
+      uptime: process.uptime(),
+      pid: process.pid
     }
   });
 
@@ -330,139 +314,103 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Odaya katılma işlemi
-  socket.on('join-room', (userData) => {
-    try {
-      const { roomId, userId, userName, isHost } = userData;
-      console.log(`Kullanıcı odaya katılıyor - Gelen veri:`, userData);
-      
-      if (!roomId) {
-        console.error('Oda ID belirtilmemiş');
-        socket.emit('room-error', { message: 'Oda ID belirtilmemiş' });
-        return;
-      }
-      
-      if (!userName) {
-        console.error('Kullanıcı adı belirtilmemiş:', userData);
-        socket.emit('room-error', { message: 'Kullanıcı adı belirtilmemiş' });
-        return;
-      }
-      
-      // Oda varsa katıl
-      socket.join(roomId);
-      
-      // Kullanıcı bilgilerini sakla
-      socket.userData = {
-        id: userId || socket.id,
-        name: userName || 'Misafir',
-        roomId,
-        isHost: !!isHost,
-        isMuted: false,
-        noiseSuppression: 'normal'
-      };
-      
-      console.log(`Kullanıcı odaya başarıyla katıldı: ${socket.userData.name} (${socket.userData.id}), Oda: ${roomId}`);
-      
-      // Kullanıcıları güncelle ve bildir
-      updateUsers(roomId);
-    } catch (error) {
-      console.error('Odaya katılma hatası:', error);
-      socket.emit('room-error', { message: 'Odaya katılırken bir hata oluştu' });
+  // Ses durumu değişikliği
+  socket.on('voice-status-change', ({ roomId, isMuted }) => {
+    console.log(`Ses durumu değişti: ${socket.userData?.name} (${socket.id}), Durumu: ${isMuted ? 'Sessiz' : 'Aktif'}`);
+    
+    // Kullanıcı verileri içine ses durumunu kaydet
+    if (socket.userData) {
+      socket.userData.isMuted = isMuted;
     }
+    
+    // Odadaki herkese bildir
+    io.to(roomId).emit('user-voice-status', {
+      userId: socket.id,
+      isMuted
+    });
+    
+    // Güncellenmiş kullanıcı listesini de gönder
+    const users = getUsers(roomId);
+    io.to(roomId).emit('user-joined', users);
   });
 
-  // Kullanıcı durumu güncelleme
-  socket.on('user-status', (data) => {
-    try {
-      if (!socket.userData) return;
-      
-      // Kullanıcı bilgilerini güncelle
-      Object.assign(socket.userData, data);
-      
-      // Odadaki kullanıcıları bilgilendir
-      updateUsers(data.roomId);
-    } catch (error) {
-      console.error('Kullanıcı durumu güncelleme hatası:', error);
+  // Gürültü engelleme seviyesi değişikliği
+  socket.on('noise-suppression-change', ({ roomId, level }) => {
+    console.log(`Gürültü engelleme seviyesi değişti: ${socket.userData?.name} (${socket.id}), Seviyesi: ${level}`);
+    
+    // Kullanıcı verileri içine gürültü engelleme seviyesini kaydet
+    if (socket.userData) {
+      socket.userData.noiseSuppression = level;
     }
+    
+    // Sadece ilgili kullanıcıya onay gönder
+    socket.emit('noise-suppression-updated', {
+      level
+    });
   });
 
-  // Odadan ayrılma
-  socket.on('leave-room', ({ roomId }) => {
-    try {
-      console.log(`Kullanıcı odadan ayrılıyor: ${socket.userData?.name} (${socket.id}), Oda: ${roomId}`);
-      socket.leave(roomId);
-      
-      // Kullanıcı verilerini temizle
-      socket.userData = null;
-      
-      // Odadaki kullanıcıları bilgilendir
-      updateUsers(roomId);
-    } catch (error) {
-      console.error('Odadan ayrılma hatası:', error);
+  // Kullanıcı odaya katıldığında
+  socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
+    console.log(`${userName} (${userId || socket.id}) ${roomId} odasına katıldı`);
+    
+    // Kullanıcı oturumunu yeniden bağlanma durumu için kontrol et
+    let isReconnect = false;
+    const previousRoom = Object.keys(socket.rooms).find(room => room !== socket.id);
+    
+    if (previousRoom) {
+      console.log(`${userName} önceki bir odadan tekrar bağlanıyor: ${previousRoom}`);
+      socket.leave(previousRoom);
+      isReconnect = true;
     }
-  });
+    
+    // Odaya katıl
+    socket.join(roomId);
+    
+    // Kullanıcı bilgilerini sakla - ID'yi saklamayı unutma
+    socket.userData = { 
+      id: userId || socket.id, 
+      name: userName, 
+      room: roomId, 
+      isHost, 
+      isConnected: true,
+      isMuted: true, // Başlangıçta herkesin sesi kapalı
+      noiseSuppression: 'medium' // Varsayılan gürültü engelleme seviyesi
+    };
+    
+    // Odadaki tüm kullanıcıları güncelle
+    const users = getUsers(roomId);
+    console.log(`Odadaki kullanıcılar (${roomId}):`, users);
+    
+    // Herkese kullanıcı listesini gönder
+    io.to(roomId).emit('user-joined', users);
+    
+    // Özellikle yeni kullanıcıya bilgi ver
+    socket.emit('room-info', {
+      roomId,
+      users,
+      yourId: socket.id,
+      isReconnect
+    });
 
-  // Odadaki kullanıcı listesini güncelle
-  function updateUsers(roomId) {
-    try {
-      if (!roomId) {
-        console.error('updateUsers: roomId belirtilmemiş');
-        return;
-      }
+    // Yeniden bağlanma durumunda ekstra işlemler yap
+    if (isReconnect) {
+      console.log(`${userName} yeniden bağlandı, mevcut ekran paylaşımlarını bildirme`);
       
-      const room = io.sockets.adapter.rooms.get(roomId);
-      if (!room) {
-        console.error(`updateUsers: ${roomId} odası bulunamadı`);
-        return;
-      }
-      
-      console.log(`${roomId} odasındaki soket sayısı: ${room.size}`);
-      
-      // Odadaki geçerli kullanıcıları al
-      const usersList = [];
-      let invalidUsers = 0;
-      
-      room.forEach((socketId) => {
-        const userSocket = io.sockets.sockets.get(socketId);
-        if (userSocket) {
-          if (!userSocket.userData) {
-            console.warn(`Soket (${socketId}) var ama userData yok:`, userSocket.id);
-            invalidUsers++;
-            return;
-          }
+      // Bu odada ekran paylaşan kullanıcıları bul ve yeni kullanıcıya bildir
+      const sharingSockets = findScreenSharingSockets(roomId);
+      sharingSockets.forEach(sharingSocket => {
+        if (sharingSocket.id !== socket.id) {
+          console.log(`${sharingSocket.userData?.name} ekran paylaştığı bilgisi gönderiliyor`);
           
-          // Eksik verileri kontrol et - sadece geçerli kullanıcıları listeye ekle
-          if (userSocket.userData.id && userSocket.userData.name) {
-            usersList.push({
-              id: userSocket.userData.id,
-              name: userSocket.userData.name,
-              isHost: !!userSocket.userData.isHost,
-              isMuted: !!userSocket.userData.isMuted,
-              noiseSuppression: userSocket.userData.noiseSuppression || 'normal'
-            });
-          } else {
-            console.warn('Geçersiz kullanıcı verisi:', userSocket.userData);
-            invalidUsers++;
-          }
-        } else {
-          console.warn(`${socketId} soketine ait kullanıcı bulunamadı`);
-          invalidUsers++;
+          // Yeni bağlanan kullanıcıya bildir
+          socket.emit('screen-share-started', {
+            userId: sharingSocket.id,
+            userName: sharingSocket.userData?.name
+          });
         }
       });
-      
-      console.log(`Oda (${roomId}) kullanıcı listesi güncellendi: ${usersList.length} kullanıcı, ${invalidUsers} geçersiz kullanıcı`);
-      
-      // Boş liste kontrolü
-      if (usersList.length === 0) {
-        console.warn(`${roomId} odasında geçerli kullanıcı bulunamadı!`);
-      }
-      
-      // Kullanıcı listesini odadaki herkese bildir
-      io.to(roomId).emit('users-updated', usersList);
-    } catch (error) {
-      console.error('Kullanıcı listesi güncelleme hatası:', error);
     }
-  }
+  });
 
   // Kullanıcı ekran paylaşmaya başladığında
   socket.on('screen-share-started', ({ roomId, userId, userName, hasAudio }) => {
@@ -574,7 +522,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Ekran paylaşımı için otomatik bağlantı yenileme
+  // Ekran paylaşım için otomatik bağlantı yenileme
   function triggerReconnect(roomId, sharingUserId) {
     console.log(`Odadaki herkese bağlantı yenileme tetikleniyor (${roomId})`);
     
@@ -597,26 +545,20 @@ io.on('connection', (socket) => {
     });
   }
 
-  // Kullanıcı listesi isteğini işle
-  socket.on('request-user-list', (data) => {
-    const { roomId } = data;
-    const user = getUserBySocketId(socket.id);
+  // Kullanıcı listesi güncelleme isteği
+  socket.on('request-user-list', ({ roomId }) => {
+    console.log(`${socket.userData?.name || 'Bir kullanıcı'} kullanıcı listesi güncellemesi istedi (${roomId})`);
     
-    if (user) {
-      console.log(`${user.name} kullanıcısı ${roomId} odası için kullanıcı listesi istedi`);
-    }
+    // Odadaki güncel kullanıcı listesini al
+    const users = getUsers(roomId);
     
-    if (!roomId) {
-      console.error('Kullanıcı listesi isteğinde roomId belirtilmemiş');
-      return;
-    }
+    // İsteyen kullanıcıya gönder
+    socket.emit('user-joined', users);
     
-    const users = getUsersInRoom(roomId);
-    console.log(`${roomId} odasındaki kullanıcı listesi gönderiliyor (${users.length} kullanıcı)`);
+    // Diğer kullanıcılara da gönder (isteğe bağlı)
+    socket.to(roomId).emit('user-joined', users);
     
-    // İsteyen kullanıcıya ve odadaki diğer kullanıcılara gönder
-    socket.emit('users-updated', { users });
-    socket.to(roomId).emit('users-updated', { users });
+    console.log(`Kullanıcı listesi güncellendi ve gönderildi (${roomId}):`, users);
   });
 
   // Yeniden bağlanma isteği - yeni
@@ -790,32 +732,23 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('chat-message', message);
   });
 
+  // Ping-pong cevabı
+  socket.on('client-pong', (data) => {
+    const latency = Date.now() - data.timestamp;
+    console.log(`Ping-pong latency for ${socket.id}: ${latency}ms`);
+    socket.emit('latency-report', { latency });
+  });
+
   // Kullanıcı bağlantıyı kestiğinde
   socket.on('disconnect', () => {
     console.log('Kullanıcı ayrıldı:', socket.id);
+    clearInterval(pingInterval);
     
-    // Kullanıcının odasını bul
-    const userData = socket.userData;
-    if (userData && userData.roomId) {
-      const roomId = userData.roomId;
-      console.log(`${socket.id} (${userData.name}) kullanıcısı ${roomId} odasından ayrıldı`);
-      
-      // Odadan ayrıl
-      socket.leave(roomId);
-      
-      // Socket'in user data'sını temizle
-      socket.userData = null;
-      
-      // Odayı güncelle ve diğerlerine bildir
-      updateUsers(roomId);
-      
-      // user-left olayını da gönder
-      io.to(roomId).emit('user-left', { 
-        userId: userData.id, 
-        userName: userData.name 
-      });
-    } else {
-      console.warn('Ayrılan kullanıcının oda bilgisi bulunamadı:', socket.id);
+    // Kullanıcının odasını bul ve diğerlerine haber ver
+    const roomId = socket.userData?.room;
+    if (roomId) {
+      const users = getUsers(roomId);
+      io.to(roomId).emit('user-left', users);
     }
   });
 });
@@ -836,30 +769,56 @@ function findScreenSharingSockets(roomId) {
   return sharingSockets;
 }
 
-// Belirtilen odadaki tüm kullanıcıları getir
+// Bir odadaki tüm kullanıcıları getir - güçlendirildi
 function getUsers(roomId) {
-  const users = [];
-  const room = io.sockets.adapter.rooms.get(roomId);
+  if (!roomId) {
+    console.error('getUsers: Oda kimliği belirtilmedi!');
+    return [];
+  }
   
-  if (room) {
-    room.forEach(socketId => {
+  if (!io.sockets.adapter.rooms.has(roomId)) {
+    console.log(`getUsers: ${roomId} odası mevcut değil`);
+    return [];
+  }
+  
+  try {
+    const users = [];
+    const socketIds = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
+    
+    socketIds.forEach(socketId => {
       const socket = io.sockets.sockets.get(socketId);
       if (socket && socket.userData) {
         users.push({
-          id: socket.userData.id || socket.id,
-          name: socket.userData.name,
+          id: socketId,
+          name: socket.userData.name || 'Adsız Kullanıcı',
           isHost: socket.userData.isHost || false,
           isSharing: socket.userData.isSharing || false,
+          hasAudio: socket.userData.hasAudio || false,
           isMuted: socket.userData.isMuted !== undefined ? socket.userData.isMuted : true,
-          hasAudio: socket.userData.hasAudio !== undefined ? socket.userData.hasAudio : true,
           noiseSuppression: socket.userData.noiseSuppression || 'medium',
-          connected: socket.userData.connected !== undefined ? socket.userData.connected : true
+          connected: socket.connected
+        });
+      } else if (socket) {
+        // Soket var ama userData tanımlı değilse
+        users.push({
+          id: socketId,
+          name: 'Bilinmeyen Kullanıcı',
+          isHost: false,
+          isSharing: false,
+          hasAudio: false,
+          isMuted: true,
+          noiseSuppression: 'medium',
+          connected: socket.connected
         });
       }
     });
+    
+    console.log(`Kullanıcı listesi hazırlandı (${roomId}):`, users);
+    return users;
+  } catch (error) {
+    console.error(`getUsers hatası (${roomId}):`, error);
+    return [];
   }
-  
-  return users;
 }
 
 server.listen(PORT, () => {
