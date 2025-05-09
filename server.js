@@ -251,6 +251,68 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Ses akışı başlatma sinyali
+  socket.on('voice-signal', (data) => {
+    const { signal, callerId, userToSignal, senderName } = data;
+    console.log(`Ses sinyali alındı: ${senderName || socket.userData?.name} (${callerId}) -> ${userToSignal}`);
+    
+    if (userToSignal && io.sockets.sockets.has(userToSignal)) {
+      io.to(userToSignal).emit('voice-signal', {
+        signal,
+        callerId,
+        senderName: senderName || socket.userData?.name
+      });
+    }
+  });
+
+  // Ses akışı yanıt sinyali
+  socket.on('voice-signal-return', (data) => {
+    const { signal, callerId } = data;
+    console.log(`Ses yanıt sinyali: ${socket.id} -> ${callerId}`);
+    
+    if (callerId && io.sockets.sockets.has(callerId)) {
+      io.to(callerId).emit('voice-signal-returned', {
+        signal,
+        id: socket.id
+      });
+    }
+  });
+
+  // Ses durumu değişikliği
+  socket.on('voice-status-change', ({ roomId, isMuted }) => {
+    console.log(`Ses durumu değişti: ${socket.userData?.name} (${socket.id}), Durumu: ${isMuted ? 'Sessiz' : 'Aktif'}`);
+    
+    // Kullanıcı verileri içine ses durumunu kaydet
+    if (socket.userData) {
+      socket.userData.isMuted = isMuted;
+    }
+    
+    // Odadaki herkese bildir
+    io.to(roomId).emit('user-voice-status', {
+      userId: socket.id,
+      isMuted
+    });
+    
+    // Güncellenmiş kullanıcı listesini de gönder
+    const users = getUsers(roomId);
+    io.to(roomId).emit('user-joined', users);
+  });
+
+  // Gürültü engelleme seviyesi değişikliği
+  socket.on('noise-suppression-change', ({ roomId, level }) => {
+    console.log(`Gürültü engelleme seviyesi değişti: ${socket.userData?.name} (${socket.id}), Seviyesi: ${level}`);
+    
+    // Kullanıcı verileri içine gürültü engelleme seviyesini kaydet
+    if (socket.userData) {
+      socket.userData.noiseSuppression = level;
+    }
+    
+    // Sadece ilgili kullanıcıya onay gönder
+    socket.emit('noise-suppression-updated', {
+      level
+    });
+  });
+
   // Kullanıcı odaya katıldığında
   socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
     console.log(`${userName} (${userId || socket.id}) ${roomId} odasına katıldı`);
@@ -269,7 +331,15 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     
     // Kullanıcı bilgilerini sakla - ID'yi saklamayı unutma
-    socket.userData = { id: userId || socket.id, name: userName, room: roomId, isHost, isConnected: true };
+    socket.userData = { 
+      id: userId || socket.id, 
+      name: userName, 
+      room: roomId, 
+      isHost, 
+      isConnected: true,
+      isMuted: true, // Başlangıçta herkesin sesi kapalı
+      noiseSuppression: 'medium' // Varsayılan gürültü engelleme seviyesi
+    };
     
     // Odadaki tüm kullanıcıları güncelle
     const users = getUsers(roomId);
@@ -637,6 +707,37 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('user-left', users);
     }
   });
+
+  // Ekran paylaşımı isteği - sonradan katılanlar için
+  socket.on('request-screen-share', ({ roomId, requesterId, requesterName, targetId }) => {
+    console.log(`${requesterName} kullanıcısı ekran paylaşımı talep ediyor. Hedef: ${targetId}`);
+    
+    try {
+      // Hedef soket mevcut mu kontrol et
+      const targetSocket = io.sockets.sockets.get(targetId);
+      if (!targetSocket) {
+        console.error(`Hedef ekran paylaşım kullanıcısı bulunamadı: ${targetId}`);
+        return;
+      }
+      
+      // Hedef kullanıcı bağlı mı kontrol et
+      if (!targetSocket.connected) {
+        console.error(`Hedef ekran paylaşım kullanıcısı bağlı değil: ${targetId}`);
+        return;
+      }
+      
+      // İsteği ilet
+      targetSocket.emit('request-screen-share', {
+        roomId,
+        requesterId,
+        requesterName
+      });
+      
+      console.log(`Ekran paylaşım isteği iletildi: ${requesterName} -> ${targetSocket.userData?.name}`);
+    } catch (error) {
+      console.error(`Ekran paylaşımı isteği iletilirken hata: ${error.message}`);
+    }
+  });
 });
 
 // Ekran paylaşan kullanıcıları bul
@@ -679,6 +780,9 @@ function getUsers(roomId) {
           name: socket.userData.name || 'Adsız Kullanıcı',
           isHost: socket.userData.isHost || false,
           isSharing: socket.userData.isSharing || false,
+          hasAudio: socket.userData.hasAudio || false,
+          isMuted: socket.userData.isMuted !== undefined ? socket.userData.isMuted : true,
+          noiseSuppression: socket.userData.noiseSuppression || 'medium',
           connected: socket.connected
         });
       } else if (socket) {
@@ -688,6 +792,9 @@ function getUsers(roomId) {
           name: 'Bilinmeyen Kullanıcı',
           isHost: false,
           isSharing: false,
+          hasAudio: false,
+          isMuted: true,
+          noiseSuppression: 'medium',
           connected: socket.connected
         });
       }
