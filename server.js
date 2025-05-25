@@ -5,41 +5,35 @@ import cors from 'cors';
 
 const app = express();
 
-// CORS ayarları genişletildi
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// CORS Preflight isteklerine cevap ver
 app.options('*', cors());
 
 const server = createServer(app);
 
-// Socket.io CORS ayarlarını güncelledik
 const io = new Server(server, {
   cors: {
-    origin: "*", // Tüm kaynaklardan bağlantılara izin ver
+    origin: "*", 
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization']
   },
-  transports: ['websocket', 'polling'] // WebSocket ve polling destekle
+  transports: ['websocket', 'polling'] 
 });
 
 const PORT = process.env.PORT || 3001;
 
-// Route for checking if the server is running
 app.get('/', (req, res) => {
   res.send('Socket.io sunucusu çalışıyor');
 });
 
-// Tanılama ve durum endpointi
 app.get('/status', (req, res) => {
   const roomStats = [];
   io.sockets.adapter.rooms.forEach((sockets, room) => {
-    // Soket ID'lerini istatistiklere dahil etme
     if (!room.startsWith('/')) {
       const users = getUsers(room);
       roomStats.push({
@@ -65,7 +59,6 @@ app.get('/status', (req, res) => {
   });
 });
 
-// WebRTC compatibility information route
 app.get('/webrtc-check', (req, res) => {
   res.json({
     server: {
@@ -96,7 +89,6 @@ app.get('/webrtc-check', (req, res) => {
   });
 });
 
-// Ekran paylaşım kontrol ve tanılama endpoint
 app.get('/screen-sharing-debug', (req, res) => {
   res.send(`
   <!DOCTYPE html>
@@ -218,16 +210,13 @@ app.get('/screen-sharing-debug', (req, res) => {
   `);
 });
 
-// Socket.io bağlantı dinleyicisi
 io.on('connection', (socket) => {
   console.log('Bir kullanıcı bağlandı:', socket.id);
 
-  // Ekran bağlantısı tanılama
   socket.on('rtc-diagnostic', ({ roomId, targetId }) => {
     console.log(`Tanılama isteği alındı: ${socket.id} -> ${targetId}, Oda: ${roomId}`);
     
     try {
-      // Tanılama verilerini gönder
       const diagnosticInfo = {
         serverTime: Date.now(),
         serverUptime: process.uptime(),
@@ -238,7 +227,6 @@ io.on('connection', (socket) => {
       
       socket.emit('rtc-diagnostic-result', diagnosticInfo);
       
-      // Hedef kullanıcı mevcutsa ona da bildirim gönder
       if (targetId && io.sockets.sockets.has(targetId)) {
         io.sockets.sockets.get(targetId).emit('rtc-connection-check', {
           fromId: socket.id,
@@ -251,11 +239,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Kullanıcı odaya katıldığında
   socket.on('join-room', ({ roomId, userId, userName, isHost }) => {
     console.log(`${userName} (${userId || socket.id}) ${roomId} odasına katıldı`);
     
-    // Kullanıcı oturumunu yeniden bağlanma durumu için kontrol et
     let isReconnect = false;
     const previousRoom = Object.keys(socket.rooms).find(room => room !== socket.id);
     
@@ -265,20 +251,15 @@ io.on('connection', (socket) => {
       isReconnect = true;
     }
     
-    // Odaya katıl
     socket.join(roomId);
     
-    // Kullanıcı bilgilerini sakla - ID'yi saklamayı unutma
     socket.userData = { id: userId || socket.id, name: userName, room: roomId, isHost, isConnected: true };
     
-    // Odadaki tüm kullanıcıları güncelle
     const users = getUsers(roomId);
     console.log(`Odadaki kullanıcılar (${roomId}):`, users);
     
-    // Herkese kullanıcı listesini gönder
     io.to(roomId).emit('user-joined', users);
     
-    // Özellikle yeni kullanıcıya bilgi ver
     socket.emit('room-info', {
       roomId,
       users,
@@ -286,17 +267,14 @@ io.on('connection', (socket) => {
       isReconnect
     });
 
-    // Yeniden bağlanma durumunda ekstra işlemler yap
     if (isReconnect) {
       console.log(`${userName} yeniden bağlandı, mevcut ekran paylaşımlarını bildirme`);
       
-      // Bu odada ekran paylaşan kullanıcıları bul ve yeni kullanıcıya bildir
       const sharingSockets = findScreenSharingSockets(roomId);
       sharingSockets.forEach(sharingSocket => {
         if (sharingSocket.id !== socket.id) {
           console.log(`${sharingSocket.userData?.name} ekran paylaştığı bilgisi gönderiliyor`);
           
-          // Yeni bağlanan kullanıcıya bildir
           socket.emit('screen-share-started', {
             userId: sharingSocket.id,
             userName: sharingSocket.userData?.name
@@ -306,17 +284,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Kullanıcı ekran paylaşmaya başladığında
   socket.on('screen-share-started', ({ roomId, userId, userName, hasAudio }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} ekran paylaşımı başlattı (ses: ${hasAudio ? 'var' : 'yok'})`);
     
-    // Kullanıcı bilgilerini güncelle
     if (socket.userData) {
       socket.userData.isSharing = true;
       socket.userData.hasAudio = hasAudio;
     }
     
-    // Kendisine doğrulama gönder
     socket.emit('screen-share-confirmed', {
       userId: userId || socket.id,
       userName: socket.userData?.name || userName,
@@ -325,7 +300,6 @@ io.on('connection', (socket) => {
       hasAudio
     });
     
-    // Diğerlerine bildir
     socket.to(roomId).emit('screen-share-started', {
       userId: userId || socket.id,
       userName: socket.userData?.name || userName,
@@ -334,20 +308,16 @@ io.on('connection', (socket) => {
       hasAudio
     });
     
-    // Odadaki tüm kullanıcıları güncelle ve herkese bildir
     const users = getUsers(roomId);
     io.to(roomId).emit('user-joined', users);
     
-    // Tüm kullanıcılara yeni bağlantı kurmaları için bildirim
     triggerReconnect(roomId, socket.id);
   });
 
-  // Doğrudan medya bilgilerinin paylaşılması için yeni endpoint
   socket.on('media-stream-info', ({ roomId, constraints, streamId }) => {
     console.log(`Medya akışı bilgisi paylaşılıyor (${roomId}), stream: ${streamId}`);
     
     try {
-      // Kullanıcının paylaşım yapacağı bilgisini sakla
       if (socket.userData) {
         socket.userData.mediaStreamInfo = {
           streamId: streamId,
@@ -356,7 +326,6 @@ io.on('connection', (socket) => {
         };
       }
       
-      // Odadaki diğer kullanıcılara bildir
       socket.to(roomId).emit('new-media-stream-available', {
         userId: socket.id,
         userName: socket.userData?.name || 'Bilinmeyen Kullanıcı',
@@ -372,11 +341,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Ekran paylaşım hazır bildirimi - yeni
   socket.on('screen-share-ready', ({ roomId, offerOptions }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} ekran paylaşım sinyalini hazır bildirdi`);
     
-    // Odadaki diğer kullanıcılara bildir
     socket.to(roomId).emit('prepare-for-screen-share', {
       fromId: socket.id,
       userName: socket.userData?.name || 'Bilinmeyen Kullanıcı',
@@ -387,7 +354,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Yeni direkt bağlantı mekanizması
   socket.on('direct-signal', ({ targetId, signalData, type }) => {
     console.log(`Doğrudan sinyal gönderiliyor: ${socket.id} -> ${targetId}, tip: ${type}`);
     
@@ -416,14 +382,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Ekran paylaşımı için otomatik bağlantı yenileme
   function triggerReconnect(roomId, sharingUserId) {
     console.log(`Odadaki herkese bağlantı yenileme tetikleniyor (${roomId})`);
     
-    // Odadaki tüm kullanıcıları bul
     const users = getUsers(roomId);
     
-    // Ekran paylaşan kullanıcı dışındaki herkese bildir
     users.forEach(user => {
       if (user.id !== sharingUserId) {
         const targetSocket = io.sockets.sockets.get(user.id);
@@ -439,23 +402,18 @@ io.on('connection', (socket) => {
     });
   }
 
-  // Kullanıcı listesi güncelleme isteği
   socket.on('request-user-list', ({ roomId }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} kullanıcı listesi güncellemesi istedi (${roomId})`);
     
-    // Odadaki güncel kullanıcı listesini al
     const users = getUsers(roomId);
     
-    // İsteyen kullanıcıya gönder
     socket.emit('user-joined', users);
     
-    // Diğer kullanıcılara da gönder (isteğe bağlı)
     socket.to(roomId).emit('user-joined', users);
     
     console.log(`Kullanıcı listesi güncellendi ve gönderildi (${roomId}):`, users);
   });
 
-  // Yeniden bağlanma isteği - yeni
   socket.on('request-peer-reconnect', ({ targetId, roomId }) => {
     console.log(`Bağlantı yenileme isteği: ${socket.id} -> ${targetId}`);
     
@@ -490,11 +448,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Kullanıcı ekran paylaşımını durdurduğunda
   socket.on('screen-share-stopped', ({ roomId, userId, userName }) => {
     console.log(`${socket.userData?.name || 'Bir kullanıcı'} ekran paylaşımını durdurdu`);
     
-    // Kullanıcı bilgilerini güncelle
     if (socket.userData) {
       socket.userData.isSharing = false;
     }
@@ -505,17 +461,14 @@ io.on('connection', (socket) => {
     });
   });
 
-  // WebRTC sinyal gönderimi - iyileştirildi
   socket.on('sending-signal', ({ userToSignal, callerId, signal, senderName }) => {
     console.log(`Sinyal gönderiliyor: ${callerId} -> ${userToSignal}`);
     console.log(`Gönderenin adı: ${senderName || socket.userData?.name || 'Bilinmeyen kullanıcı'}`);
     
-    // Signal nesnesinin içeriğini kontrol et
     if (signal) {
       console.log(`Sinyal tipi: ${signal.type || 'Bilinmiyor'}, SDPLength: ${signal.sdp ? signal.sdp.length : 0}`);
     }
     
-    // Hedef soket mevcut mu kontrol et
     const targetSocket = io.sockets.sockets.get(userToSignal);
     if (!targetSocket) {
       console.error(`Hedef soket bulunamadı: ${userToSignal}`);
@@ -526,7 +479,6 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // Hedef kullanıcı bağlı mı kontrol et
     if (!targetSocket.connected) {
       console.error(`Hedef soket bağlı değil: ${userToSignal}`);
       socket.emit('signal-error', {
@@ -537,16 +489,14 @@ io.on('connection', (socket) => {
     }
     
     try {
-      // Ek bilgilerle beraber sinyali gönder
       targetSocket.emit('receiving-signal', {
         signal,
         id: callerId,
-        callerId: callerId, // Ek güvenlik için çift alan
+        callerId: callerId, 
         senderName: senderName || socket.userData?.name || 'Bilinmeyen kullanıcı',
-        timestamp: Date.now() // Zamansal kontrol için
+        timestamp: Date.now() 
       });
       
-      // Gönderim başarı onayı
       socket.emit('signal-sent', {
         targetId: userToSignal,
         success: true
@@ -562,18 +512,15 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Bağlantı yenileme talebi
   socket.on('signal-reconnect-request', ({ targetId, roomId }) => {
     console.log(`Bağlantı yenileme talebi: ${socket.id} -> ${targetId}`);
     
-    // Hedef soket mevcut mu kontrol et 
     const targetSocket = io.sockets.sockets.get(targetId);
     if (!targetSocket) {
       console.error(`Yeniden bağlanılacak soket bulunamadı: ${targetId}`);
       return;
     }
     
-    // Kullanıcıya yeniden bağlanma sinyali gönder
     targetSocket.emit('reconnect-signal', {
       userId: socket.id,
       userName: socket.userData?.name || 'Bilinmeyen kullanıcı',
@@ -583,16 +530,13 @@ io.on('connection', (socket) => {
     console.log(`Yeniden bağlanma talebi gönderildi: ${socket.id} -> ${targetId}`);
   });
 
-  // WebRTC geri gelen sinyal - iyileştirildi
   socket.on('returning-signal', ({ callerID, signal }) => {
     console.log(`Yanıt sinyali gönderiliyor: ${socket.id} -> ${callerID}`);
     
-    // Signal nesnesinin içeriğini kontrol et
     if (signal) {
       console.log(`Sinyal tipi: ${signal.type || 'Bilinmiyor'}, SDPLength: ${signal.sdp ? signal.sdp.length : 0}`);
     }
     
-    // Hedef soket mevcut mu kontrol et
     const targetSocket = io.sockets.sockets.get(callerID);
     if (!targetSocket) {
       console.error(`Hedef soket bulunamadı: ${callerID}`);
@@ -620,17 +564,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Sohbet mesajlarını işleme
   socket.on('chat-message', ({ roomId, message }) => {
     console.log(`Mesaj - Oda: ${roomId}, Gönderen: ${message.sender}`);
     socket.to(roomId).emit('chat-message', message);
   });
 
-  // Kullanıcı bağlantıyı kestiğinde
   socket.on('disconnect', () => {
     console.log('Kullanıcı ayrıldı:', socket.id);
     
-    // Kullanıcının odasını bul ve diğerlerine haber ver
     const roomId = socket.userData?.room;
     if (roomId) {
       const users = getUsers(roomId);
@@ -639,7 +580,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Ekran paylaşan kullanıcıları bul
 function findScreenSharingSockets(roomId) {
   const sharingSockets = [];
   
@@ -655,7 +595,6 @@ function findScreenSharingSockets(roomId) {
   return sharingSockets;
 }
 
-// Bir odadaki tüm kullanıcıları getir - güçlendirildi
 function getUsers(roomId) {
   if (!roomId) {
     console.error('getUsers: Oda kimliği belirtilmedi!');
@@ -682,7 +621,6 @@ function getUsers(roomId) {
           connected: socket.connected
         });
       } else if (socket) {
-        // Soket var ama userData tanımlı değilse
         users.push({
           id: socketId,
           name: 'Bilinmeyen Kullanıcı',
